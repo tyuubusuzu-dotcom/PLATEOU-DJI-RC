@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.3]</title>
+    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.4]</title>
     <!-- CesiumJSの読み込み -->
     <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
     <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
@@ -49,7 +49,7 @@
 <body>
 
 <div id="ui-panel">
-    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.3]</h1>
+    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.4]</h1>
     
     <div class="control-group">
         <label>1. PLATEAU 3D Tiles URL (初期値: 大阪市)</label>
@@ -89,7 +89,7 @@
 <script>
     // Cesium Viewerの初期化
     const viewer = new Cesium.Viewer('cesiumContainer', {
-        terrainProvider: undefined,
+        terrain: Cesium.Terrain.fromWorldTerrain(), // ★ 地形の標高データを有効化
         baseLayerPicker: false,
         geocoder: false,
         homeButton: false,
@@ -101,6 +101,9 @@
         infoBox: false
     });
 
+    // ★ ビルや地形の向こう側にある線を隠す（物理的な遮蔽の視覚化）
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+
     viewer.imageryLayers.removeAll();
     viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
         url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
@@ -109,7 +112,6 @@
     }));
 
     // ====== 表示位置の記憶・復元機能 ======
-    // 大阪市天王寺区勝山４丁目付近の座標
     const defaultLat = 34.6533;
     const defaultLon = 135.5265;
     const defaultHeight = 2000;
@@ -120,7 +122,6 @@
 
     const today = new Date().toDateString();
     
-    // 今日の日付ならローカルストレージから前回の位置を復元
     if (localStorage.getItem('cesium_map_date') === today) {
         const savedLat = localStorage.getItem('cesium_map_lat');
         const savedLon = localStorage.getItem('cesium_map_lon');
@@ -132,12 +133,10 @@
         }
     }
 
-    // 初期位置へカメラを移動（アニメーションなしで即座に）
     viewer.camera.setView({
         destination: Cesium.Cartesian3.fromDegrees(initLon, initLat, initHeight)
     });
 
-    // カメラの移動が終わるたびに位置を保存
     viewer.camera.moveEnd.addEventListener(function() {
         const position = viewer.camera.positionCartographic;
         localStorage.setItem('cesium_map_date', new Date().toDateString());
@@ -166,10 +165,6 @@
             if (tileset) { viewer.scene.primitives.remove(tileset); }
             tileset = await Cesium.Cesium3DTileset.fromUrl(url);
             viewer.scene.primitives.add(tileset);
-            
-            // ★修正ポイント: viewer.zoomTo(tileset); を削除しました。
-            // これにより、読み込み時に遠方の中心座標へカメラが飛んでいくのを防ぎます。
-            
             msg.innerText = "PLATEAUの読み込みが完了しました。";
         } catch (e) {
             alert("3D Tilesの読み込みに失敗しました。URLが正しいか確認してください。\n" + e);
@@ -180,33 +175,37 @@
         btn.innerText = "🏢 3D都市モデルを読み込む";
     }
 
-    // 基地局配置モードの切り替え
     function enablePlacementMode() {
         isPlacingMode = true;
-        document.getElementById('status-msg').innerText = "マップ上の任意の場所をクリックして配置";
+        document.getElementById('status-msg').innerText = "マップ上（地面やビルの上）をクリックして配置";
         document.getElementById('cesiumContainer').style.cursor = 'crosshair';
     }
 
-    // クリックイベントの処理
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction(function(click) {
         if (!isPlacingMode) return;
         
-        const cartesian = viewer.scene.globe.pick(viewer.camera.getPickRay(click.position), viewer.scene);
+        // ★ 変更点: ビルの屋上などの3Dオブジェクトの正確な高さを優先的に取得
+        let cartesian = viewer.scene.pickPosition(click.position);
+        if (!cartesian) {
+            // オブジェクトがない場合は地形（地面）の表面を取得
+            cartesian = viewer.scene.globe.pick(viewer.camera.getPickRay(click.position), viewer.scene);
+        }
+
         if (cartesian) {
             if (baseStationEntity) { viewer.entities.remove(baseStationEntity); }
             
             const carto = Cesium.Cartographic.fromCartesian(cartesian);
             const lon = Cesium.Math.toDegrees(carto.longitude);
             const lat = Cesium.Math.toDegrees(carto.latitude);
-            const alt = carto.height + 1.8; // ポール高を1.8mと仮定
+            const alt = carto.height + 1.8; // クリックした標高(地面 or ビル屋上) + ポール高1.8m
             
             const finalPos = Cesium.Cartesian3.fromDegrees(lon, lat, alt);
 
             baseStationEntity = viewer.entities.add({
                 position: finalPos,
-                point: { pixelSize: 12, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 },
-                label: { text: 'D-RTK 3', font: '14px sans-serif', pixelOffset: new Cesium.Cartesian2(0, -15), fillColor: Cesium.Color.WHITE }
+                point: { pixelSize: 12, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+                label: { text: 'D-RTK 3', font: '14px sans-serif', pixelOffset: new Cesium.Cartesian2(0, -15), fillColor: Cesium.Color.WHITE, disableDepthTestDistance: Number.POSITIVE_INFINITY }
             });
             
             isPlacingMode = false;
@@ -215,7 +214,6 @@
         }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-    // 緯度経度からの距離計算
     function getDestination(lat, lon, brng, dist) {
         const R = 6371e3;
         const lat1 = lat * Math.PI / 180, lon1 = lon * Math.PI / 180, brngRad = brng * Math.PI / 180;
@@ -224,7 +222,6 @@
         return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
     }
 
-    // 視界ライン（Line of Sight）の生成
     function drawLines() {
         if (!baseStationEntity) {
             alert("先に基地局を配置してください。");
@@ -238,18 +235,20 @@
         const bsCarto = Cesium.Cartographic.fromCartesian(bsPos);
         
         const radius = parseFloat(document.getElementById('sim-radius').value);
-        const droneAlt = parseFloat(document.getElementById('drone-alt').value);
+        const droneAgl = parseFloat(document.getElementById('drone-alt').value);
         
-        // 10度刻みで36本のラインを生成
+        // ドローンの絶対高度 = 基地局の足元の標高 + 飛行高度(AGL)
+        const droneAbsoluteAlt = (bsCarto.height - 1.8) + droneAgl;
+        
         for (let angle = 0; angle < 360; angle += 10) {
             const dest = getDestination(Cesium.Math.toDegrees(bsCarto.latitude), Cesium.Math.toDegrees(bsCarto.longitude), angle, radius);
-            const destPos = Cesium.Cartesian3.fromDegrees(dest.lon, dest.lat, droneAlt);
+            const destPos = Cesium.Cartesian3.fromDegrees(dest.lon, dest.lat, droneAbsoluteAlt);
             
             const line = viewer.entities.add({
                 polyline: {
                     positions: [bsPos, destPos],
-                    width: 2,
-                    material: new Cesium.ColorMaterialProperty(Cesium.Color.CYAN.withAlpha(0.6)),
+                    width: 3,
+                    material: new Cesium.ColorMaterialProperty(Cesium.Color.CYAN.withAlpha(0.8)),
                     arcType: Cesium.ArcType.NONE 
                 }
             });
