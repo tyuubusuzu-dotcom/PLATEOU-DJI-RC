@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="ja" translate="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.1]</title>
+    <!-- CesiumJSの読み込み -->
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; font-family: 'Segoe UI', Meiryo, sans-serif; overflow: hidden; }
+        #cesiumContainer { width: 100%; height: 100%; display: block; }
+        
+        /* UIパネルのスタイリング */
+        #ui-panel {
+            position: absolute; top: 15px; left: 15px; z-index: 10;
+            background: rgba(255, 255, 255, 0.95); padding: 15px;
+            border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            width: 350px; border: 1px solid #ccd1d1;
+        }
+        h1 { font-size: 1.1rem; color: #2c3e50; margin-top: 0; border-bottom: 2px solid #3498db; padding-bottom: 8px; margin-bottom: 12px; }
+        
+        .control-group { margin-bottom: 12px; }
+        label { font-size: 0.85rem; font-weight: bold; color: #34495e; display: block; margin-bottom: 4px; }
+        input[type="text"], input[type="number"] {
+            width: 100%; padding: 6px; box-sizing: border-box;
+            border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem;
+        }
+        
+        .btn {
+            background: #3498db; color: white; border: none; padding: 8px 10px;
+            font-size: 0.9rem; border-radius: 4px; cursor: pointer; width: 100%;
+            font-weight: bold; transition: background 0.2s; margin-bottom: 8px;
+        }
+        .btn:hover { background: #2980b9; }
+        .btn-green { background: #2ecc71; }
+        .btn-green:hover { background: #27ae60; }
+        .btn-red { background: #e74c3c; }
+        .btn-red:hover { background: #c0392b; }
+        
+        #status-msg {
+            font-size: 0.85rem; color: #d35400; font-weight: bold;
+            background: #fdf2e9; padding: 8px; border-radius: 4px; text-align: center;
+        }
+        
+        .note { font-size: 0.75rem; color: #7f8c8d; line-height: 1.4; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="ui-panel">
+    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.1]</h1>
+    
+    <div class="control-group">
+        <label>1. PLATEAU 3D Tiles URL (初期値は東京のサンプル)</label>
+        <input type="text" id="plateau-url" value="https://plateau.geospatial.jp/main/data/3d-tiles/bldg/13100_tokyo/13100_tokyo_bldg_3dtiles/tileset.json">
+        <button id="load-btn" class="btn" style="margin-top: 5px;" onclick="loadPlateau()">🏢 3D都市モデルを読み込む</button>
+    </div>
+
+    <div class="control-group" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+            <label>🚁 ドローン高度</label>
+            <input type="number" id="drone-alt" value="100" step="10"> m
+        </div>
+        <div style="flex:1;">
+            <label>📡 解析半径</label>
+            <input type="number" id="sim-radius" value="500" step="100"> m
+        </div>
+    </div>
+
+    <div class="control-group">
+        <button class="btn btn-red" onclick="enablePlacementMode()">📍 2. 基地局を配置 (マップをクリック)</button>
+        <button class="btn btn-green" onclick="drawLines()">✨ 3. 3D視界ラインを生成する</button>
+    </div>
+
+    <div id="status-msg">設定を入力してください。</div>
+    
+    <div class="note">
+        <strong>【3Dカメラ操作】</strong><br>
+        ・<strong>回転/斜め表示:</strong> Ctrlキーを押しながら左ドラッグ（またはマウスのホイールボタンを押しながらドラッグ）<br>
+        ・<strong>移動:</strong> 左ドラッグ<br>
+        ・<strong>ズーム:</strong> マウスホイール<br><br>
+        ※ 3Dモデルの読み込みには数秒〜十数秒かかります。
+    </div>
+</div>
+
+<div id="cesiumContainer"></div>
+
+<script>
+    // Cesium Viewerの初期化（不要なウィジェットを非表示にして軽くする）
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+        terrainProvider: undefined, // 都市部向けのためひとまず平面地形
+        baseLayerPicker: false,
+        geocoder: false,
+        homeButton: false,
+        sceneModePicker: false,
+        navigationHelpButton: false,
+        animation: false,
+        timeline: false,
+        fullscreenButton: false,
+        infoBox: false
+    });
+
+    // 国土地理院の衛星写真（シームレス）をベースマップに設定
+    viewer.imageryLayers.removeAll();
+    viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+        url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
+        credit: '国土地理院',
+        maximumLevel: 18
+    }));
+
+    // 初期表示位置を東京（サンプルのPLATEAUデータがある場所）に設定
+    viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(139.6917, 35.6894, 3000)
+    });
+
+    let tileset = null;
+    let baseStationEntity = null;
+    let losLines = [];
+    let isPlacingMode = false;
+
+    // PLATEAU 3D Tilesの読み込み
+    async function loadPlateau() {
+        const url = document.getElementById('plateau-url').value;
+        const btn = document.getElementById('load-btn');
+        const msg = document.getElementById('status-msg');
+        
+        btn.disabled = true;
+        btn.innerText = "読み込み中...";
+        msg.innerText = "PLATEAUデータをダウンロード中...";
+        
+        try {
+            if (tileset) { viewer.scene.primitives.remove(tileset); }
+            tileset = await Cesium.Cesium3DTileset.fromUrl(url);
+            viewer.scene.primitives.add(tileset);
+            viewer.zoomTo(tileset);
+            msg.innerText = "PLATEAUの読み込みが完了しました。";
+        } catch (e) {
+            alert("3D Tilesの読み込みに失敗しました。URLが正しいか確認してください。\n" + e);
+            msg.innerText = "読み込みエラー";
+        }
+        
+        btn.disabled = false;
+        btn.innerText = "🏢 3D都市モデルを読み込む";
+    }
+
+    // 基地局配置モードの切り替え
+    function enablePlacementMode() {
+        isPlacingMode = true;
+        document.getElementById('status-msg').innerText = "マップ上の任意の場所をクリックして配置";
+        document.getElementById('cesiumContainer').style.cursor = 'crosshair';
+    }
+
+    // クリックイベントの処理
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction(function(click) {
+        if (!isPlacingMode) return;
+        
+        // クリックした位置の座標を取得
+        const cartesian = viewer.scene.globe.pick(viewer.camera.getPickRay(click.position), viewer.scene);
+        if (cartesian) {
+            if (baseStationEntity) { viewer.entities.remove(baseStationEntity); }
+            
+            const carto = Cesium.Cartographic.fromCartesian(cartesian);
+            const lon = Cesium.Math.toDegrees(carto.longitude);
+            const lat = Cesium.Math.toDegrees(carto.latitude);
+            const alt = carto.height + 1.8; // ポール高を1.8mと仮定
+            
+            const finalPos = Cesium.Cartesian3.fromDegrees(lon, lat, alt);
+
+            baseStationEntity = viewer.entities.add({
+                position: finalPos,
+                point: { pixelSize: 12, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 },
+                label: { text: 'D-RTK 3', font: '14px sans-serif', pixelOffset: new Cesium.Cartesian2(0, -15), fillColor: Cesium.Color.WHITE }
+            });
+            
+            isPlacingMode = false;
+            document.getElementById('cesiumContainer').style.cursor = 'default';
+            document.getElementById('status-msg').innerText = "基地局を配置しました。「3D視界ラインを生成」を押してください。";
+        }
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    // 緯度経度からの距離計算
+    function getDestination(lat, lon, brng, dist) {
+        const R = 6371e3;
+        const lat1 = lat * Math.PI / 180, lon1 = lon * Math.PI / 180, brngRad = brng * Math.PI / 180;
+        const lat2 = Math.asin(Math.sin(lat1) * Math.cos(dist/R) + Math.cos(lat1) * Math.sin(dist/R) * Math.cos(brngRad));
+        const lon2 = lon1 + Math.atan2(Math.sin(brngRad) * Math.sin(dist/R) * Math.cos(lat1), Math.cos(dist/R) - Math.sin(lat1) * Math.sin(lat2));
+        return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
+    }
+
+    // 視界ライン（Line of Sight）の生成
+    function drawLines() {
+        if (!baseStationEntity) {
+            alert("先に基地局を配置してください。");
+            return;
+        }
+        
+        losLines.forEach(l => viewer.entities.remove(l));
+        losLines = [];
+        
+        const bsPos = baseStationEntity.position.getValue(viewer.clock.currentTime);
+        const bsCarto = Cesium.Cartographic.fromCartesian(bsPos);
+        
+        const radius = parseFloat(document.getElementById('sim-radius').value);
+        const droneAlt = parseFloat(document.getElementById('drone-alt').value);
+        
+        // 10度刻みで36本のラインを生成
+        for (let angle = 0; angle < 360; angle += 10) {
+            const dest = getDestination(Cesium.Math.toDegrees(bsCarto.latitude), Cesium.Math.toDegrees(bsCarto.longitude), angle, radius);
+            const destPos = Cesium.Cartesian3.fromDegrees(dest.lon, dest.lat, droneAlt);
+            
+            const line = viewer.entities.add({
+                polyline: {
+                    positions: [bsPos, destPos],
+                    width: 2,
+                    // ビルを突き抜けた際に分かりやすいよう半透明の水色に設定
+                    material: new Cesium.ColorMaterialProperty(Cesium.Color.CYAN.withAlpha(0.6)),
+                    arcType: Cesium.ArcType.NONE // 直線で描画
+                }
+            });
+            losLines.push(line);
+        }
+        
+        document.getElementById('status-msg').innerText = "ライン生成完了。Ctrl+左ドラッグでカメラを傾けて確認してください。";
+    }
+</script>
+
+</body>
+</html>
