@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.5]</title>
+    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.6]</title>
     <!-- CesiumJSの読み込み -->
     <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
     <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
@@ -48,7 +48,7 @@
 <body>
 
 <div id="ui-panel">
-    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.5]</h1>
+    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.6]</h1>
     
     <div class="control-group">
         <label>1. PLATEAU 3D Tiles URL (初期値: 大阪市)</label>
@@ -56,7 +56,6 @@
         <button id="load-btn" class="btn" style="margin-top: 5px;" onclick="loadPlateau()">🏢 3D都市モデルを読み込む</button>
     </div>
 
-    <!-- 高さ調整スライダーを追加 -->
     <div class="control-group">
         <label>↕️ 2. ビルの高さ微調整 (地面に合わせる)</label>
         <div style="display:flex; gap:10px; align-items:center;">
@@ -84,18 +83,14 @@
     <div id="status-msg">設定を入力してください。</div>
     
     <div class="note">
-        <strong>【3Dカメラ操作】</strong><br>
-        ・<strong>回転/斜め表示:</strong> Ctrlキー＋左ドラッグ（またはマウスホイール押し込みドラッグ）<br>
-        ・<strong>移動:</strong> 左ドラッグ<br>
-        ・<strong>ズーム:</strong> マウスホイール<br><br>
-        ※ 初回読み込みには数秒〜十数秒かかります。
+        <strong>【Ver.6 の見方】</strong><br>
+        上空に表示される「半透明の円盤」がドローンの飛行高度(100m)です。基地局からその円盤に向かって伸びる斜めの電波ラインが、途中のビルに遮られていないかを確認してください。
     </div>
 </div>
 
 <div id="cesiumContainer"></div>
 
 <script>
-    // Cesium Viewerの初期化 (APIエラーを避けるため地形はフラットに戻す)
     const viewer = new Cesium.Viewer('cesiumContainer', {
         terrainProvider: undefined,
         baseLayerPicker: false,
@@ -149,14 +144,12 @@
         localStorage.setItem('cesium_map_lon', Cesium.Math.toDegrees(position.longitude));
         localStorage.setItem('cesium_map_height', position.height);
     });
-    // ===================================
 
     let tileset = null;
     let baseStationEntity = null;
     let losLines = [];
     let isPlacingMode = false;
 
-    // PLATEAU 3D Tilesの読み込み
     async function loadPlateau() {
         const url = document.getElementById('plateau-url').value;
         const btn = document.getElementById('load-btn');
@@ -171,7 +164,6 @@
             tileset = await Cesium.Cesium3DTileset.fromUrl(url);
             viewer.scene.primitives.add(tileset);
             
-            // 初期の高さ調整を適用
             updateBldgHeight();
             
             msg.innerText = "PLATEAUの読み込みが完了しました。";
@@ -184,7 +176,6 @@
         btn.innerText = "🏢 3D都市モデルを読み込む";
     }
 
-    // ★ ビルの高さをスライダーで上げ下げする機能
     function updateBldgHeight() {
         if (!tileset) return;
         const offsetMeters = parseFloat(document.getElementById('bldg-offset').value);
@@ -261,13 +252,31 @@
         const radius = parseFloat(document.getElementById('sim-radius').value);
         const droneAgl = parseFloat(document.getElementById('drone-alt').value);
         
+        // ドローンの絶対高度 = 基地局の足元の標高 + 飛行高度(AGL)
         const droneAbsoluteAlt = (bsCarto.height - 1.8) + droneAgl;
         
+        // ★追加1: ドローンの「飛行空域」を示す半透明の円盤（天井）を描画
+        const flightDisk = viewer.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(Cesium.Math.toDegrees(bsCarto.longitude), Cesium.Math.toDegrees(bsCarto.latitude), droneAbsoluteAlt),
+            ellipse: {
+                semiMinorAxis: radius,
+                semiMajorAxis: radius,
+                height: droneAbsoluteAlt,
+                material: Cesium.Color.CYAN.withAlpha(0.2), // 半透明の水色
+                outline: true,
+                outlineColor: Cesium.Color.CYAN
+            }
+        });
+        losLines.push(flightDisk);
+        
+        // 10度刻みでラインを生成
         for (let angle = 0; angle < 360; angle += 10) {
             const dest = getDestination(Cesium.Math.toDegrees(bsCarto.latitude), Cesium.Math.toDegrees(bsCarto.longitude), angle, radius);
             const destPos = Cesium.Cartesian3.fromDegrees(dest.lon, dest.lat, droneAbsoluteAlt);
+            const groundPos = Cesium.Cartesian3.fromDegrees(dest.lon, dest.lat, bsCarto.height - 1.8); // 地面の座標
             
-            const line = viewer.entities.add({
+            // 電波のライン（基地局 → 上空100mの円盤の縁）
+            const radioLine = viewer.entities.add({
                 polyline: {
                     positions: [bsPos, destPos],
                     width: 3,
@@ -275,10 +284,21 @@
                     arcType: Cesium.ArcType.NONE 
                 }
             });
-            losLines.push(line);
+            losLines.push(radioLine);
+
+            // ★追加2: 高さの基準となる垂直ポール（円盤の縁 → 地面）
+            const verticalPole = viewer.entities.add({
+                polyline: {
+                    positions: [groundPos, destPos],
+                    width: 2,
+                    material: new Cesium.ColorMaterialProperty(Cesium.Color.YELLOW.withAlpha(0.5)),
+                    arcType: Cesium.ArcType.NONE 
+                }
+            });
+            losLines.push(verticalPole);
         }
         
-        document.getElementById('status-msg').innerText = "ライン生成完了。Ctrl+左ドラッグでカメラを傾けて確認してください。";
+        document.getElementById('status-msg').innerText = "ライン生成完了。上空の円盤が指定高度(100m)です。";
     }
 </script>
 
