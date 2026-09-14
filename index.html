@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.2]</title>
+    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.3]</title>
     <!-- CesiumJSの読み込み -->
     <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
     <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
@@ -49,11 +49,11 @@
 <body>
 
 <div id="ui-panel">
-    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.2]</h1>
+    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.3]</h1>
     
     <div class="control-group">
-        <label>1. PLATEAU 3D Tiles URL</label>
-        <input type="text" id="plateau-url" value="https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/13101-bldg-lod2-latest/tileset.json">
+        <label>1. PLATEAU 3D Tiles URL (初期値: 大阪市)</label>
+        <input type="text" id="plateau-url" value="https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/27100-bldg-lod2-latest/tileset.json">
         <button id="load-btn" class="btn" style="margin-top: 5px;" onclick="loadPlateau()">🏢 3D都市モデルを読み込む</button>
     </div>
 
@@ -108,10 +108,44 @@
         maximumLevel: 18
     }));
 
-    // 初期表示位置を東京（千代田区周辺）に設定
-    viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(139.7538, 35.6836, 2000)
+    // ====== 表示位置の記憶・復元機能 ======
+    // 大阪市天王寺区勝山４丁目付近の座標
+    const defaultLat = 34.6533;
+    const defaultLon = 135.5265;
+    const defaultHeight = 2000;
+
+    let initLat = defaultLat;
+    let initLon = defaultLon;
+    let initHeight = defaultHeight;
+
+    const today = new Date().toDateString();
+    
+    // 今日の日付ならローカルストレージから前回の位置を復元
+    if (localStorage.getItem('cesium_map_date') === today) {
+        const savedLat = localStorage.getItem('cesium_map_lat');
+        const savedLon = localStorage.getItem('cesium_map_lon');
+        const savedHeight = localStorage.getItem('cesium_map_height');
+        if (savedLat && savedLon && savedHeight) {
+            initLat = parseFloat(savedLat);
+            initLon = parseFloat(savedLon);
+            initHeight = parseFloat(savedHeight);
+        }
+    }
+
+    // 初期位置へカメラを移動（アニメーションなしで即座に）
+    viewer.camera.setView({
+        destination: Cesium.Cartesian3.fromDegrees(initLon, initLat, initHeight)
     });
+
+    // カメラの移動が終わるたびに位置を保存
+    viewer.camera.moveEnd.addEventListener(function() {
+        const position = viewer.camera.positionCartographic;
+        localStorage.setItem('cesium_map_date', new Date().toDateString());
+        localStorage.setItem('cesium_map_lat', Cesium.Math.toDegrees(position.latitude));
+        localStorage.setItem('cesium_map_lon', Cesium.Math.toDegrees(position.longitude));
+        localStorage.setItem('cesium_map_height', position.height);
+    });
+    // ===================================
 
     let tileset = null;
     let baseStationEntity = null;
@@ -132,7 +166,10 @@
             if (tileset) { viewer.scene.primitives.remove(tileset); }
             tileset = await Cesium.Cesium3DTileset.fromUrl(url);
             viewer.scene.primitives.add(tileset);
-            viewer.zoomTo(tileset);
+            
+            // ★修正ポイント: viewer.zoomTo(tileset); を削除しました。
+            // これにより、読み込み時に遠方の中心座標へカメラが飛んでいくのを防ぎます。
+            
             msg.innerText = "PLATEAUの読み込みが完了しました。";
         } catch (e) {
             alert("3D Tilesの読み込みに失敗しました。URLが正しいか確認してください。\n" + e);
