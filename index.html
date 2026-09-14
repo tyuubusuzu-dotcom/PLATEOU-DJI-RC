@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.6]</title>
+    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.7]</title>
     <!-- CesiumJSの読み込み -->
     <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
     <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
@@ -34,6 +34,8 @@
         .btn:hover { background: #2980b9; }
         .btn-green { background: #2ecc71; }
         .btn-green:hover { background: #27ae60; }
+        .btn-orange { background: #e67e22; }
+        .btn-orange:hover { background: #d35400; }
         .btn-red { background: #e74c3c; }
         .btn-red:hover { background: #c0392b; }
         
@@ -48,7 +50,7 @@
 <body>
 
 <div id="ui-panel">
-    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.6]</h1>
+    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.7]</h1>
     
     <div class="control-group">
         <label>1. PLATEAU 3D Tiles URL (初期値: 大阪市)</label>
@@ -76,15 +78,16 @@
     </div>
 
     <div class="control-group">
-        <button class="btn btn-red" onclick="enablePlacementMode()">📍 3. 基地局を配置 (マップをクリック)</button>
+        <button class="btn btn-orange" onclick="enablePlacementMode()">📍 3. 基地局を配置 (マップをクリック)</button>
         <button class="btn btn-green" onclick="drawLines()">✨ 4. 3D視界ラインを生成する</button>
+        <button class="btn btn-red" onclick="clearAll()" style="margin-top:5px;">🗑️ 全クリア (切り出しリセット)</button>
     </div>
 
     <div id="status-msg">設定を入力してください。</div>
     
     <div class="note">
-        <strong>【Ver.6 の見方】</strong><br>
-        上空に表示される「半透明の円盤」がドローンの飛行高度(100m)です。基地局からその円盤に向かって伸びる斜めの電波ラインが、途中のビルに遮られていないかを確認してください。
+        <strong>【Ver.7 超軽量化モード】</strong><br>
+        「視界ラインを生成」した瞬間に、解析半径の2倍の範囲のビル群のみを四角く切り出し、それ以外のデータを非表示にして動作を軽くします。
     </div>
 </div>
 
@@ -104,7 +107,6 @@
         infoBox: false
     });
 
-    // 視界ラインが物理的にビルの裏に隠れる設定
     viewer.scene.globe.depthTestAgainstTerrain = true;
 
     viewer.imageryLayers.removeAll();
@@ -114,7 +116,6 @@
         maximumLevel: 18
     }));
 
-    // ====== 表示位置の記憶・復元機能 ======
     const defaultLat = 34.6533;
     const defaultLon = 135.5265;
     const defaultHeight = 2000;
@@ -163,12 +164,10 @@
             if (tileset) { viewer.scene.primitives.remove(tileset); }
             tileset = await Cesium.Cesium3DTileset.fromUrl(url);
             viewer.scene.primitives.add(tileset);
-            
             updateBldgHeight();
-            
             msg.innerText = "PLATEAUの読み込みが完了しました。";
         } catch (e) {
-            alert("3D Tilesの読み込みに失敗しました。URLが正しいか確認してください。\n" + e);
+            alert("3D Tilesの読み込みに失敗しました。\n" + e);
             msg.innerText = "読み込みエラー";
         }
         
@@ -237,6 +236,14 @@
         return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
     }
 
+    function clearAll() {
+        if (baseStationEntity) { viewer.entities.remove(baseStationEntity); baseStationEntity = null; }
+        losLines.forEach(l => viewer.entities.remove(l));
+        losLines = [];
+        if (tileset) { tileset.clippingPlanes = undefined; } // 切り出しリセット
+        document.getElementById('status-msg').innerText = "クリアしました。";
+    }
+
     function drawLines() {
         if (!baseStationEntity) {
             alert("先に基地局を配置してください。");
@@ -251,31 +258,42 @@
         
         const radius = parseFloat(document.getElementById('sim-radius').value);
         const droneAgl = parseFloat(document.getElementById('drone-alt').value);
-        
-        // ドローンの絶対高度 = 基地局の足元の標高 + 飛行高度(AGL)
         const droneAbsoluteAlt = (bsCarto.height - 1.8) + droneAgl;
         
-        // ★追加1: ドローンの「飛行空域」を示す半透明の円盤（天井）を描画
+        // ★ 負荷軽減: 基地局周囲（半径×2）のモデルのみを残し、他を非表示(クリッピング)にする
+        if (tileset) {
+            const clipDist = radius * 2;
+            tileset.clippingPlanes = new Cesium.ClippingPlaneCollection({
+                planes: [
+                    new Cesium.ClippingPlane(new Cesium.Cartesian3( 1.0,  0.0,  0.0), clipDist),
+                    new Cesium.ClippingPlane(new Cesium.Cartesian3(-1.0,  0.0,  0.0), clipDist),
+                    new Cesium.ClippingPlane(new Cesium.Cartesian3( 0.0,  1.0,  0.0), clipDist),
+                    new Cesium.ClippingPlane(new Cesium.Cartesian3( 0.0, -1.0,  0.0), clipDist)
+                ],
+                edgeWidth: 2.0,
+                edgeColor: Cesium.Color.CYAN.withAlpha(0.5),
+                modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(bsPos)
+            });
+        }
+        
         const flightDisk = viewer.entities.add({
             position: Cesium.Cartesian3.fromDegrees(Cesium.Math.toDegrees(bsCarto.longitude), Cesium.Math.toDegrees(bsCarto.latitude), droneAbsoluteAlt),
             ellipse: {
                 semiMinorAxis: radius,
                 semiMajorAxis: radius,
                 height: droneAbsoluteAlt,
-                material: Cesium.Color.CYAN.withAlpha(0.2), // 半透明の水色
+                material: Cesium.Color.CYAN.withAlpha(0.2),
                 outline: true,
                 outlineColor: Cesium.Color.CYAN
             }
         });
         losLines.push(flightDisk);
         
-        // 10度刻みでラインを生成
         for (let angle = 0; angle < 360; angle += 10) {
             const dest = getDestination(Cesium.Math.toDegrees(bsCarto.latitude), Cesium.Math.toDegrees(bsCarto.longitude), angle, radius);
             const destPos = Cesium.Cartesian3.fromDegrees(dest.lon, dest.lat, droneAbsoluteAlt);
-            const groundPos = Cesium.Cartesian3.fromDegrees(dest.lon, dest.lat, bsCarto.height - 1.8); // 地面の座標
+            const groundPos = Cesium.Cartesian3.fromDegrees(dest.lon, dest.lat, bsCarto.height - 1.8);
             
-            // 電波のライン（基地局 → 上空100mの円盤の縁）
             const radioLine = viewer.entities.add({
                 polyline: {
                     positions: [bsPos, destPos],
@@ -286,7 +304,6 @@
             });
             losLines.push(radioLine);
 
-            // ★追加2: 高さの基準となる垂直ポール（円盤の縁 → 地面）
             const verticalPole = viewer.entities.add({
                 polyline: {
                     positions: [groundPos, destPos],
@@ -298,7 +315,7 @@
             losLines.push(verticalPole);
         }
         
-        document.getElementById('status-msg').innerText = "ライン生成完了。上空の円盤が指定高度(100m)です。";
+        document.getElementById('status-msg').innerText = "ライン生成完了＆軽量化カットを適用しました。";
     }
 </script>
 
