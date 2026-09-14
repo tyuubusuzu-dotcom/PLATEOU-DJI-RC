@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.4]</title>
+    <title>D-RTK 3 x PLATEAU 3Dシミュレーター [Ver.5]</title>
     <!-- CesiumJSの読み込み -->
     <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
     <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
@@ -11,12 +11,11 @@
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; font-family: 'Segoe UI', Meiryo, sans-serif; overflow: hidden; }
         #cesiumContainer { width: 100%; height: 100%; display: block; }
         
-        /* UIパネルのスタイリング */
         #ui-panel {
             position: absolute; top: 15px; left: 15px; z-index: 10;
             background: rgba(255, 255, 255, 0.95); padding: 15px;
             border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-            width: 350px; border: 1px solid #ccd1d1;
+            width: 360px; border: 1px solid #ccd1d1;
         }
         h1 { font-size: 1.1rem; color: #2c3e50; margin-top: 0; border-bottom: 2px solid #3498db; padding-bottom: 8px; margin-bottom: 12px; }
         
@@ -49,12 +48,21 @@
 <body>
 
 <div id="ui-panel">
-    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.4]</h1>
+    <h1>D-RTK 3 x PLATEAU 3D解析 [Ver.5]</h1>
     
     <div class="control-group">
         <label>1. PLATEAU 3D Tiles URL (初期値: 大阪市)</label>
         <input type="text" id="plateau-url" value="https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/27100-bldg-lod2-latest/tileset.json">
         <button id="load-btn" class="btn" style="margin-top: 5px;" onclick="loadPlateau()">🏢 3D都市モデルを読み込む</button>
+    </div>
+
+    <!-- 高さ調整スライダーを追加 -->
+    <div class="control-group">
+        <label>↕️ 2. ビルの高さ微調整 (地面に合わせる)</label>
+        <div style="display:flex; gap:10px; align-items:center;">
+            <input type="range" id="bldg-offset" min="-100" max="50" value="-15" step="1" style="flex:1;" oninput="updateBldgHeight()">
+            <span id="offset-val" style="font-size:0.9rem; width:40px; text-align:right; font-weight:bold;">-15m</span>
+        </div>
     </div>
 
     <div class="control-group" style="display:flex; gap:10px;">
@@ -69,8 +77,8 @@
     </div>
 
     <div class="control-group">
-        <button class="btn btn-red" onclick="enablePlacementMode()">📍 2. 基地局を配置 (マップをクリック)</button>
-        <button class="btn btn-green" onclick="drawLines()">✨ 3. 3D視界ラインを生成する</button>
+        <button class="btn btn-red" onclick="enablePlacementMode()">📍 3. 基地局を配置 (マップをクリック)</button>
+        <button class="btn btn-green" onclick="drawLines()">✨ 4. 3D視界ラインを生成する</button>
     </div>
 
     <div id="status-msg">設定を入力してください。</div>
@@ -87,9 +95,9 @@
 <div id="cesiumContainer"></div>
 
 <script>
-    // Cesium Viewerの初期化
+    // Cesium Viewerの初期化 (APIエラーを避けるため地形はフラットに戻す)
     const viewer = new Cesium.Viewer('cesiumContainer', {
-        terrain: Cesium.Terrain.fromWorldTerrain(), // ★ 地形の標高データを有効化
+        terrainProvider: undefined,
         baseLayerPicker: false,
         geocoder: false,
         homeButton: false,
@@ -101,7 +109,7 @@
         infoBox: false
     });
 
-    // ★ ビルや地形の向こう側にある線を隠す（物理的な遮蔽の視覚化）
+    // 視界ラインが物理的にビルの裏に隠れる設定
     viewer.scene.globe.depthTestAgainstTerrain = true;
 
     viewer.imageryLayers.removeAll();
@@ -121,7 +129,6 @@
     let initHeight = defaultHeight;
 
     const today = new Date().toDateString();
-    
     if (localStorage.getItem('cesium_map_date') === today) {
         const savedLat = localStorage.getItem('cesium_map_lat');
         const savedLon = localStorage.getItem('cesium_map_lon');
@@ -133,9 +140,7 @@
         }
     }
 
-    viewer.camera.setView({
-        destination: Cesium.Cartesian3.fromDegrees(initLon, initLat, initHeight)
-    });
+    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(initLon, initLat, initHeight) });
 
     viewer.camera.moveEnd.addEventListener(function() {
         const position = viewer.camera.positionCartographic;
@@ -165,6 +170,10 @@
             if (tileset) { viewer.scene.primitives.remove(tileset); }
             tileset = await Cesium.Cesium3DTileset.fromUrl(url);
             viewer.scene.primitives.add(tileset);
+            
+            // 初期の高さ調整を適用
+            updateBldgHeight();
+            
             msg.innerText = "PLATEAUの読み込みが完了しました。";
         } catch (e) {
             alert("3D Tilesの読み込みに失敗しました。URLが正しいか確認してください。\n" + e);
@@ -173,6 +182,23 @@
         
         btn.disabled = false;
         btn.innerText = "🏢 3D都市モデルを読み込む";
+    }
+
+    // ★ ビルの高さをスライダーで上げ下げする機能
+    function updateBldgHeight() {
+        if (!tileset) return;
+        const offsetMeters = parseFloat(document.getElementById('bldg-offset').value);
+        document.getElementById('offset-val').innerText = offsetMeters + "m";
+        
+        try {
+            const cartographic = Cesium.Cartographic.fromCartesian(tileset.boundingSphere.center);
+            const surface = Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, 0.0);
+            const offset = Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, offsetMeters);
+            const translation = Cesium.Cartesian3.subtract(offset, surface, new Cesium.Cartesian3());
+            tileset.modelMatrix = Cesium.Matrix4.fromTranslation(translation);
+        } catch (e) {
+            console.warn("高さの初期化待機中...");
+        }
     }
 
     function enablePlacementMode() {
@@ -185,10 +211,8 @@
     handler.setInputAction(function(click) {
         if (!isPlacingMode) return;
         
-        // ★ 変更点: ビルの屋上などの3Dオブジェクトの正確な高さを優先的に取得
         let cartesian = viewer.scene.pickPosition(click.position);
         if (!cartesian) {
-            // オブジェクトがない場合は地形（地面）の表面を取得
             cartesian = viewer.scene.globe.pick(viewer.camera.getPickRay(click.position), viewer.scene);
         }
 
@@ -198,7 +222,7 @@
             const carto = Cesium.Cartographic.fromCartesian(cartesian);
             const lon = Cesium.Math.toDegrees(carto.longitude);
             const lat = Cesium.Math.toDegrees(carto.latitude);
-            const alt = carto.height + 1.8; // クリックした標高(地面 or ビル屋上) + ポール高1.8m
+            const alt = carto.height + 1.8; 
             
             const finalPos = Cesium.Cartesian3.fromDegrees(lon, lat, alt);
 
@@ -237,7 +261,6 @@
         const radius = parseFloat(document.getElementById('sim-radius').value);
         const droneAgl = parseFloat(document.getElementById('drone-alt').value);
         
-        // ドローンの絶対高度 = 基地局の足元の標高 + 飛行高度(AGL)
         const droneAbsoluteAlt = (bsCarto.height - 1.8) + droneAgl;
         
         for (let angle = 0; angle < 360; angle += 10) {
